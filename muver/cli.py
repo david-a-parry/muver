@@ -13,6 +13,7 @@ from depth_distribution import (calculate_depth_distribution_bedgraph,
                                 filter_regions_by_depth_bedgraph)
 from depth_ratios import calculate_depth_ratios as _calculate_depth_ratios
 from pipeline import run_pipeline as _run_pipeline
+from qsub_pipeline import run_pipeline as _run_qsub_pipeline
 from reference import create_reference_indices, read_chrom_sizes
 from repeat_indels import fit_repeat_indel_rates as _fit_repeat_indel_rates
 from repeats import create_repeat_file as _create_repeat_file
@@ -37,13 +38,16 @@ def main(args=None):
               sorting BAM files. Modify when any FASTQ pair \
               contains >1 billion reads. See manual for guidance \
               in setting this parameter. Default = 1000000.')
+@click.option('--qsub', is_flag=True,
+              help='Create multistage commands via qsub job handler.')
 @click.argument('reference_assembly', type=click.Path(exists=True))
 @click.argument('fastq_list', type=click.Path(exists=True))
 @click.argument('control_sample_name', type=str)
 @click.argument('experiment_directory', type=str)
+
 def run_pipeline(reference_assembly, fastq_list, control_sample_name,
                  experiment_directory, processes, excluded_regions,
-                 fwer, max_records):
+                 fwer, max_records, qsub=False):
     '''
     Run MuVer pipeline, starting with FASTQ files.
 
@@ -60,16 +64,28 @@ def run_pipeline(reference_assembly, fastq_list, control_sample_name,
     "Ploidy"
     "CNV BedGraph"
     '''
-    _run_pipeline(
-        reference_assembly,
-        fastq_list,
-        control_sample_name,
-        experiment_directory,
-        p=processes,
-        excluded_regions=excluded_regions,
-        fwer=fwer,
-        max_records=max_records,
-    )
+    if qsub:
+        _run_qsub_pipeline(
+            reference_assembly,
+            fastq_list,
+            control_sample_name,
+            experiment_directory,
+            p=processes,
+            excluded_regions=excluded_regions,
+            fwer=fwer,
+            max_records=max_records,
+        )
+    else:
+        _run_pipeline(
+            reference_assembly,
+            fastq_list,
+            control_sample_name,
+            experiment_directory,
+            p=processes,
+            excluded_regions=excluded_regions,
+            fwer=fwer,
+            max_records=max_records,
+        )
 
 @main.command()
 @click.option('--excluded_regions', default=None, type=click.Path(exists=True),
