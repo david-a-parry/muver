@@ -101,9 +101,9 @@ class Sample(object):
         based on the sample name. Both are then attributed to the object.
         '''
         # GENERATE INTERMEDIATE FILES FOR EACH FASTQ
-        def named_temp(suffix=''):
+        def named_temp(prefix='tmp', suffix=''):
             return NamedTemporaryFile(
-                mode='w', dir=self.exp_dir, suffix=suffix)
+                mode='w', dir=self.exp_dir, prefix=prefix, suffix=suffix)
 
         def named_file(file_dir, file_name):
             file_name = file_name.format(self.sample_name)
@@ -124,7 +124,8 @@ class Sample(object):
                 ('_fixed_mates_bams', '.bam'),
                 ('_interval_files', '.intervals'),
             ):
-                setattr(self, attr, [named_temp(suffix=suffix) for i in n])
+                setattr(self, attr, [named_temp(prefix=self.sample_name,
+                                                suffix=suffix) for i in n])
 
             for attr, suffix in (
                 ('_mpileup_out', '.txt'),
