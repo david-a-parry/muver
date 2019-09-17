@@ -114,9 +114,9 @@ class Sample(object):
             n = range(len(self.fastqs))
 
             for attr, suffix in (
-                ('_sams', '.sam'),
-                ('_same_chr_sams', '.sam'),
-                ('_mapq_filtered_sams', '.sam'),
+                ('_sams', '.bam'),
+                ('_same_chr_sams', '.bam'),
+                ('_mapq_filtered_sams', '.bam'),
                 ('_read_group_bams', '.bam'),
                 ('_deduplicated_bams', '.bam'),
                 ('_deduplication_metrics', '.txt'),
