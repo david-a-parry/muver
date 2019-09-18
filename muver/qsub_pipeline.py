@@ -1,9 +1,11 @@
 import os
 import sys
+from subprocess import call
 import reference
 from sample import (Sample, read_samples_from_text,
                     generate_experiment_directory, write_sample_info_file)
 from math import ceil
+from collections import defaultdict
 import ConfigParser
 
 PATHS = dict()
@@ -13,6 +15,17 @@ config.read(os.path.join(
 for key, value in config.items('paths'):
     PATHS[key] = value
 
+_bash_check_log = '''for LOG in $@
+do
+    echo $(date) - checking previous exit status from $LOG
+    if [ "$(tail -n 1 $LOG)" != '0' ]
+    then
+        non-zero status from $LOG - exiting
+        exit 1
+    fi
+    echo $(date) - status OK
+done
+'''
 
 class CommandGenerator(object):
 
@@ -47,13 +60,15 @@ class CommandGenerator(object):
 #$ -l h_vmem={}G
 {}
 set -euo pipefail
+{}
 
-echo $(date) Adding Read Groups
+echo $(date) Starting
 {}
 
 echo $(date) Finished
 echo $?
-'''.format(script_name, script_name, self.run_time, mem, pe, cmd)
+'''.format(script_name, script_name, self.run_time, mem, pe, _bash_check_log,
+           cmd)
 
 
     def align(self, script_name):
@@ -203,11 +218,123 @@ def generate_qsub_scripts(fq1, fq2, ref, sample, i, p=1, max_records=1000000):
         with open(scr, 'wt') as outfile:
             outfile.write(getattr(command_gen, stage)(scr))
         scripts.append(scr)
-    return scripts, sample._fixed_mates_bams[i]
+    return scripts
+
+def get_merge_and_index_scripts(sample, runtime=48, mem=4, processes=1):
+    pe = ''
+    if len(sample.fastqs) > 1:
+        bam = sample.merged_bam.name
+        sample.merged_bam.close()
+        cmd = '{} merge -f '.format(PATHS['samtools'])
+        if processes > 1:
+            cmd += '-@ {} '.format(processes -1)
+            pe = '#$ -pe sharedmem {}'.format(processes)
+        cmd += '{}'.format( bam) + " ".join(sample._fixed_mates_bams)
+    else:
+        bam = sample._fixed_mates_bams[0].name
+        cmd = ''
+    directory = os.path.join(sample.exp_dir, 'qsub_scripts', '')
+    scr = os.path.join(directory, "{}_merge.sh".format(sample.sample_name))
+    with open(scr, 'wt') as outfile:
+        outfile.write('''#!/bin/bash
+#$ -e {}.stderr
+#$ -o {}.stdout
+#$ -V
+#$ -cwd
+#$ -l h_rt={}:00:00
+#$ -l h_vmem={}G
+{}
+set -euo pipefail
+{}
+
+echo $(date) starting
+{}
+echo $(date) indexing
+{} index {}
+echo $(date) done
+echo $?
+'''.format(scr, scr, runtime, mem, pe, _bash_check_log, cmd, PATHS['samtools'],
+           bam))
+    return scr, bam
+
+def submit_sample_scripts(sample2scripts, sample2merge, dummy=False):
+    final_jobs = []
+    for samp, script_lists in sample2scripts.items():
+        for l in script_lists:
+            prev_script = None
+            for script in l:
+                if prev_script:
+                    cmd = ["qsub", "-hold_jid", os.path.basename(prev_script),
+                           script, prev_script + '.stdout']
+                else:
+                    cmd = ["qsub", script]
+                prev_script = script
+                if dummy:
+                    print(" ".join(cmd))
+                else:
+                    call(cmd)
+        merge_script = sample2merge[samp]
+        cmd = ["qsub", "-hold_jid", os.path.basename(prev_script),
+               merge_script, prev_script + '.stdout']
+        if dummy:
+            print(" ".join(cmd))
+        else:
+            call(cmd)
+        final_jobs.append(merge_script)
+    return final_jobs
+
+def submit_haplotype_caller(hc_script, bams, reference_assembly, vcf, log,
+                            nct, holding_jobs, runtime=48, java_mem=8,
+                            java_overhead=4, dummy=False):
+    bam_args = "-I " + " \\\n    -I ".join(bams)
+    hold_args = ",".join(os.path.basename(x) for x in holding_jobs)
+    stdouts = " ".join(x + '.stdout' for x in holding_jobs)
+    cmd = '''java -Xmx{}g -jar {} \\
+    -T HaplotypeCaller \\
+    -o {} \\
+    -A StrandAlleleCountsBySample \\
+    -A DepthPerSampleHC \\
+    -R {} \\
+    -nct {} \\
+    -mmq 5 \\
+    -log {} \\
+    --minPruning 0 \\
+    --minDanglingBranchLength 0 \\
+    --pcr_indel_model NONE \\
+    {}
+'''.format(java_mem, PATHS['gatk'], vcf, reference_assembly, nct, log,
+           bam_args)
+    with open(hc_script, 'wt') as outfile:
+        outfile.write('''#!/bin/bash
+#$ -e {}.stderr
+#$ -o {}.stdout
+#$ -V
+#$ -cwd
+#$ -l h_rt={}:00:00
+#$ -l h_vmem={}G
+#$ -pe sharedmem {}
+
+set -euo pipefail
+{}
+
+echo $(date) Calling variants
+{}
+
+echo $(date) Finished
+echo $?
+'''.format(hc_script, hc_script, runtime,
+           int(ceil(float(java_mem + java_overhead)/nct)), nct,
+           _bash_check_log, cmd))
+    call_args = ['qsub', '-hold_jid', hold_args, hc_script, stdouts]
+    if dummy:
+        print(" ".join(call_args))
+    else:
+        call(call_args)
+
 
 def run_pipeline(reference_assembly, fastq_list, control_sample,
                  experiment_directory, p=1, excluded_regions=None,
-                 fwer=0.01, max_records=1000000):
+                 fwer=0.01, max_records=1000000, dummy_run=False):
     '''
     Run the MuVer pipeline considering input FASTQ files.  All files written
     to the experiment directory.
@@ -233,6 +360,8 @@ def run_pipeline(reference_assembly, fastq_list, control_sample,
         sample.generate_intermediate_files()
     # Align
     sample2bam = dict()
+    sample2scripts = defaultdict(list)
+    sample2merge = dict()
     for sample in samples:
         for i, fastqs in enumerate(sample.fastqs):
             if len(fastqs) == 2:
@@ -240,45 +369,42 @@ def run_pipeline(reference_assembly, fastq_list, control_sample,
             else:
                 f1 = fastqs[0]
                 f2 = None
-            scripts, final_bam = generate_qsub_scripts(fq1=f1, fq2=f2,
-                                                       ref=reference_assembly,
-                                                       sample=sample, i=i, p=p,
-                                                       max_records=max_records)
-        if len(sample.fastqs) > 1:
-            sample2bam[sample.sample_name] = sample.merged_bam
-            #TODO merge
-            pass
-        else:
-            sample2bam[sample.sample_name] = sample._fixed_mates_bams[0]
+            scripts = generate_qsub_scripts(fq1=f1, fq2=f2,
+                                            ref=reference_assembly,
+                                            sample=sample, i=i, p=p,
+                                            max_records=max_records)
+            sample2scripts[sample.sample_name].append(scripts)
+        merge_script, final_bam = get_merge_and_index_scripts(sample)
+        sample2merge[sample.sample_name] = merge_script
+        sample2bam[sample.sample_name] = final_bam
 
-    # Process output SAM files
-#    pool.map(process_sams, zip(
-#        [s.sample_name for s in samples],
-#        [s.get_intermediate_file_names() for s in samples],
-#        repeat(reference_assembly),
-#        repeat(max_records),
-#    ))
-#
-#    # Run HaplotypeCaller
-#    haplotype_caller_vcf = os.path.join(
-#        experiment_directory,
-#        'gatk_output',
-#        'haplotype_caller_output.vcf'
-#    )
-#    haplotype_caller_log = os.path.join(
-#        experiment_directory,
-#        'logs',
-#        'haplotype_caller.log'
-#    )
-#    bams = [s.merged_bam for s in samples]
-#    gatk.run_haplotype_caller(
-#        bams,
-#        reference_assembly,
-#        haplotype_caller_vcf,
-#        haplotype_caller_log,
-#        nct=p,
-#    )
-#
+    holding_jobs = submit_sample_scripts(sample2scripts, sample2merge,
+                                         dummy=dummy_run)
+
+    haplotype_caller_log = os.path.join(
+        experiment_directory,
+        'logs',
+        'haplotype_caller.log'
+    )
+    haplotype_caller_vcf = os.path.join(
+        experiment_directory,
+        'gatk_output',
+        'haplotype_caller_output.vcf.gz'
+    )
+    bams = list(sample2bam.values())
+    hc_script = os.path.join(sample.exp_dir, 'qsub_scripts',
+                             'haplotype_caller.sh')
+    submit_haplotype_caller(
+        hc_script,
+        bams,
+        reference_assembly,
+        haplotype_caller_vcf,
+        haplotype_caller_log,
+        nct=p,
+        holding_jobs=holding_jobs,
+        dummy=dummy_run,
+    )
+
 #    chrom_sizes = reference.read_chrom_sizes(reference_assembly)
 #
 #    strand_bias_std_values = pool.map(analyze_depth_distribution, zip(
