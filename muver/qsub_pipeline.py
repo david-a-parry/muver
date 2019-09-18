@@ -17,15 +17,44 @@ for key, value in config.items('paths'):
 class CommandGenerator(object):
 
     def __init__(self, sample, fq1, i, ref, fq2=None, processes=1,
-                 align_mem=8, run_time=48):
+                 align_mem=8, java_mem=8, java_overhead=4, run_time=48,
+                 max_records=1000000):
         self.sample = sample
         self.fq1 = fq1
         self.fq2 = fq2
         self.ref = ref
+        self.max_records = max_records
         self.run_time = run_time
         self.align_mem = float(align_mem)
+        self.java_mem = float(java_mem)
+        self.qsub_java_mem = java_mem + java_overhead
         self.processes = processes
         self.i = i
+
+    def _java_cmd(self, script_name, cmd, parallel=False):
+        if parallel:
+            pe = '#$ -pe sharedmem {}'.format(self.processes)
+            mem = int(ceil(self.qsub_java_mem/self.processes))
+        else:
+            pe = ''
+            mem = self.qsub_java_mem
+        return '''#!/bin/bash
+#$ -e {}.stderr
+#$ -o {}.stdout
+#$ -V
+#$ -cwd
+#$ -l h_rt={}:00:00
+#$ -l h_vmem={}G
+{}
+set -euo pipefail
+
+echo $(date) Adding Read Groups
+{}
+
+echo $(date) Finished
+echo $?
+'''.format(script_name, script_name, self.run_time, mem, pe, cmd)
+
 
     def align(self, script_name):
         out = self.sample._mapq_filtered_sams[self.i].name
@@ -67,24 +96,100 @@ echo $?
         return q_script
 
     def add_read_groups(self, script_name):
-        return 'placeholder'
+        in_bam = self.sample._mapq_filtered_sams[self.i].name
+        out_bam = self.sample._read_group_bams[self.i].name
+        self.sample._read_group_bams[self.i].close()
+        cmd = '''java -Xmx{}g -jar {} \\
+    AddOrReplaceReadGroups \\
+    VALIDATION_STRINGENCY=SILENT \\
+    SO=coordinate \\
+    RGPL=illumina \\
+    RGPU={} \\
+    RGSM={} \\
+    RGLB={} \\
+    RGID={} \\
+    I={} \\
+    O={} \\
+    TMP_DIR={} \\
+    MAX_RECORDS_IN_RAM={}
+'''.format(int(self.java_mem), PATHS['picard'], self.sample.sample_name,
+           self.sample.sample_name, self.sample.sample_name,
+           self.sample.sample_name, in_bam, out_bam,
+           self.sample.tmp_dirs[self.i], self.max_records)
+        return self._java_cmd(script_name, cmd)
 
     def deduplicate(self, script_name):
-        return 'placeholder'
+        in_bam = self.sample._read_group_bams[self.i].name
+        out_bam = self.sample._deduplicated_bams[self.i].name
+        metrics_file = self.sample._deduplication_metrics[self.i].name
+        self.sample._deduplicated_bams[self.i].close()
+        self.sample._deduplication_metrics[self.i].close()
+        cmd = '''java -Xmx{}g -jar {} \\
+    MarkDuplicates \\
+    VALIDATION_STRINGENCY=SILENT \\
+    REMOVE_DUPLICATES=TRUE \\
+    I={} \\
+    O={} \\
+    M={} \\
+    TMP_DIR={} \\
+    MAX_RECORDS_IN_RAM={}
+'''.format(int(self.java_mem), PATHS['picard'], in_bam, out_bam, metrics_file,
+           self.sample.tmp_dirs[self.i], self.max_records)
+        return self._java_cmd(script_name, cmd)
 
     def realigner_target_creator(self, script_name):
-        return 'placeholder'
+        in_bam = self.sample._deduplicated_bams[self.i].name
+        out_intervals = self.sample._interval_files[self.i].name
+        self.sample._interval_files[self.i].close()
+        cmd = '''java -Xmx{}g -jar {} \\
+    -R {} \\
+    -T RealignerTargetCreator \\
+    -I {} \\
+    -o {} \\
+    -nt {}
+'''.format(int(self.java_mem), PATHS['gatk'], self.ref, in_bam, out_intervals,
+           self.processes)
+        return self._java_cmd(script_name, cmd, parallel=True)
 
     def indel_realigner(self, script_name):
-        return 'placeholder'
+        in_bam = self.sample._deduplicated_bams[self.i].name
+        intervals = self.sample._interval_files[self.i].name
+        out_bam = self.sample._realigned_bams[self.i].name
+        self.sample._realigned_bams[self.i].close()
+        cmd = '''java -Xmx{}g -jar {} \\
+    -R {} \\
+    -T IndelRealigner \\
+    --maxReadsForRealignment 100000 \\
+    -I {} \\
+    -targetIntervals {} \\
+    -o {} \\
+    -log {}
+'''.format(int(self.java_mem), PATHS['gatk'], self.ref, in_bam, intervals, out_bam,
+           self.sample.realignment_logs[self.i])
+        return self._java_cmd(script_name, cmd, parallel=False)
+
+
 
     def fix_mate_information(self, script_name):
-        return 'placeholder'
+        in_bam = self.sample._realigned_bams[self.i].name
+        out_bam = self.sample._fixed_mates_bams[self.i].name
+        self.sample._fixed_mates_bams[self.i].close()
+        cmd = '''java -Xmx{}g -jar {} \\
+    FixMateInformation \\
+    VALIDATION_STRINGENCY=SILENT \\
+    SO=coordinate \\
+    I={} \\
+    O={} \\
+    TMP_DIR={} \\
+    MAX_RECORDS_IN_RAM={}
+'''.format(int(self.java_mem), PATHS['picard'], in_bam, out_bam,
+           self.sample.tmp_dirs[self.i], self.max_records)
+        return self._java_cmd(script_name, cmd)
 
 
-def generate_qsub_scripts(fq1, fq2, ref, sample, i, p=1):
+def generate_qsub_scripts(fq1, fq2, ref, sample, i, p=1, max_records=1000000):
     command_gen = CommandGenerator(sample=sample, ref=ref, fq1=fq1, fq2=fq2,
-                                   i=i, processes=p)
+                                   i=i, processes=p, max_records=max_records)
     directory = os.path.join(sample.exp_dir, 'qsub_scripts', '')
     if not os.path.isdir(directory):
         os.makedirs(directory)
@@ -108,7 +213,6 @@ def run_pipeline(reference_assembly, fastq_list, control_sample,
     to the experiment directory.
     '''
     repeat_file = '{}.repeats'.format(os.path.splitext(reference_assembly)[0])
-
     if not reference.check_reference_indices(reference_assembly):
         sys.stderr.write('Reference assembly not indexed. Run '
             '"muver index_reference".\n')
@@ -138,7 +242,8 @@ def run_pipeline(reference_assembly, fastq_list, control_sample,
                 f2 = None
             scripts, final_bam = generate_qsub_scripts(fq1=f1, fq2=f2,
                                                        ref=reference_assembly,
-                                                       sample=sample, i=i, p=p)
+                                                       sample=sample, i=i, p=p,
+                                                       max_records=max_records)
         if len(sample.fastqs) > 1:
             sample2bam[sample.sample_name] = sample.merged_bam
             #TODO merge
