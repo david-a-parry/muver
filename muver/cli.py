@@ -40,6 +40,8 @@ def main(args=None):
               in setting this parameter. Default = 1000000.')
 @click.option('--qsub', is_flag=True,
               help='Create multistage commands via qsub job handler.')
+@click.option('--dummy_run', is_flag=True,
+              help='If using --qsub mode, create scripts but do not submit.')
 @click.argument('reference_assembly', type=click.Path(exists=True))
 @click.argument('fastq_list', type=click.Path(exists=True))
 @click.argument('control_sample_name', type=str)
@@ -47,7 +49,7 @@ def main(args=None):
 
 def run_pipeline(reference_assembly, fastq_list, control_sample_name,
                  experiment_directory, processes, excluded_regions,
-                 fwer, max_records, qsub=False):
+                 fwer, max_records, qsub=False, dummy_run=False):
     '''
     Run MuVer pipeline, starting with FASTQ files.
 
@@ -74,6 +76,7 @@ def run_pipeline(reference_assembly, fastq_list, control_sample_name,
             excluded_regions=excluded_regions,
             fwer=fwer,
             max_records=max_records,
+            dummy_run=dummy_run,
         )
     else:
         _run_pipeline(
