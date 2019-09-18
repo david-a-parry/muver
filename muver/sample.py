@@ -124,8 +124,9 @@ class Sample(object):
                 ('_fixed_mates_bams', '.bam'),
                 ('_interval_files', '.intervals'),
             ):
-                setattr(self, attr, [named_temp(prefix=self.sample_name,
-                                                suffix=suffix) for i in n])
+                setattr(self, attr, [named_temp(
+                    suffix=suffix,
+                    prefix=self.sample_name + attr + "_") for i in n])
 
             for attr, suffix in (
                 ('_mpileup_out', '.txt'),
