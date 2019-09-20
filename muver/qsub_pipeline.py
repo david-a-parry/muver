@@ -20,7 +20,7 @@ do
     echo $(date) - checking previous exit status from $LOG
     if [ "$(tail -n 1 $LOG)" != '0' ]
     then
-        non-zero status from $LOG - exiting
+        echo non-zero status from $LOG - exiting
         exit 1
     fi
     echo $(date) - status OK
@@ -30,14 +30,14 @@ done
 class CommandGenerator(object):
 
     def __init__(self, sample, fq1, i, ref, fq2=None, processes=1,
-                 align_mem=8, java_mem=8, java_overhead=4, run_time=48,
+                 align_mem=8, java_mem=8, java_overhead=4, runtime=96,
                  max_records=1000000):
         self.sample = sample
         self.fq1 = fq1
         self.fq2 = fq2
         self.ref = ref
         self.max_records = max_records
-        self.run_time = run_time
+        self.runtime = runtime
         self.align_mem = float(align_mem)
         self.java_mem = float(java_mem)
         self.qsub_java_mem = java_mem + java_overhead
@@ -67,7 +67,7 @@ echo $(date) Starting
 
 echo $(date) Finished
 echo $?
-'''.format(script_name, script_name, self.run_time, mem, pe, _bash_check_log,
+'''.format(script_name, script_name, self.runtime, mem, pe, _bash_check_log,
            cmd)
 
 
@@ -106,7 +106,7 @@ echo $(date) Doing alignment
 
 echo $(date) Finished
 echo $?
-'''.format(script_name, script_name, self.run_time,
+'''.format(script_name, script_name, self.runtime,
            int(ceil(self.align_mem/self.processes)), self.processes, cmd)
         return q_script
 
@@ -202,9 +202,11 @@ echo $?
         return self._java_cmd(script_name, cmd)
 
 
-def generate_qsub_scripts(fq1, fq2, ref, sample, i, p=1, max_records=1000000):
+def generate_qsub_scripts(fq1, fq2, ref, sample, i, p=1, max_records=1000000,
+                         runtime=96):
     command_gen = CommandGenerator(sample=sample, ref=ref, fq1=fq1, fq2=fq2,
-                                   i=i, processes=p, max_records=max_records)
+                                   i=i, processes=p, max_records=max_records,
+                                   runtime=runtime)
     directory = os.path.join(sample.exp_dir, 'qsub_scripts', '')
     if not os.path.isdir(directory):
         os.makedirs(directory)
@@ -220,7 +222,7 @@ def generate_qsub_scripts(fq1, fq2, ref, sample, i, p=1, max_records=1000000):
         scripts.append(scr)
     return scripts
 
-def get_merge_and_index_scripts(sample, runtime=48, mem=4, processes=1):
+def get_merge_and_index_scripts(sample, runtime=96, mem=4, processes=1):
     pe = ''
     if len(sample.fastqs) > 1:
         bam = sample.merged_bam.name
@@ -284,7 +286,7 @@ def submit_sample_scripts(sample2scripts, sample2merge, dummy=False):
     return final_jobs
 
 def submit_haplotype_caller(hc_script, bams, reference_assembly, vcf, log,
-                            nct, holding_jobs, runtime=48, java_mem=8,
+                            nct, holding_jobs, runtime=96, java_mem=8,
                             java_overhead=4, dummy=False):
     bam_args = "-I " + " \\\n    -I ".join(bams)
     hold_args = ",".join(os.path.basename(x) for x in holding_jobs)
@@ -334,7 +336,7 @@ echo $?
 
 def run_pipeline(reference_assembly, fastq_list, control_sample,
                  experiment_directory, p=1, excluded_regions=None,
-                 fwer=0.01, max_records=1000000, dummy_run=False):
+                 fwer=0.01, max_records=1000000, runtime=96, dummy_run=False):
     '''
     Run the MuVer pipeline considering input FASTQ files.  All files written
     to the experiment directory.
@@ -372,7 +374,8 @@ def run_pipeline(reference_assembly, fastq_list, control_sample,
             scripts = generate_qsub_scripts(fq1=f1, fq2=f2,
                                             ref=reference_assembly,
                                             sample=sample, i=i, p=p,
-                                            max_records=max_records)
+                                            max_records=max_records,
+                                            runtime=runtime)
             sample2scripts[sample.sample_name].append(scripts)
         merge_script, final_bam = get_merge_and_index_scripts(sample)
         sample2merge[sample.sample_name] = merge_script
@@ -402,6 +405,7 @@ def run_pipeline(reference_assembly, fastq_list, control_sample,
         haplotype_caller_log,
         nct=p,
         holding_jobs=holding_jobs,
+        runtime=runtime,
         dummy=dummy_run,
     )
 
