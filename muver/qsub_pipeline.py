@@ -40,7 +40,7 @@ class CommandGenerator(object):
         self.runtime = runtime
         self.align_mem = float(align_mem)
         self.java_mem = float(java_mem)
-        self.qsub_java_mem = java_mem + java_overhead
+        self.qsub_java_mem = float(java_mem + java_overhead)
         self.processes = processes
         self.i = i
 
@@ -50,7 +50,7 @@ class CommandGenerator(object):
             mem = int(ceil(self.qsub_java_mem/self.processes))
         else:
             pe = ''
-            mem = self.qsub_java_mem
+            mem = int(self.qsub_java_mem)
         return '''#!/bin/bash
 #$ -e {}.stderr
 #$ -o {}.stdout
@@ -147,6 +147,7 @@ echo $?
     O={} \\
     M={} \\
     TMP_DIR={} \\
+    CREATE_INDEX=true \\
     MAX_RECORDS_IN_RAM={}
 '''.format(int(self.java_mem), PATHS['picard'], in_bam, out_bam, metrics_file,
            self.sample.tmp_dirs[self.i], self.max_records)
@@ -189,6 +190,10 @@ echo $?
         in_bam = self.sample._realigned_bams[self.i].name
         out_bam = self.sample._fixed_mates_bams[self.i].name
         self.sample._fixed_mates_bams[self.i].close()
+        if len(self.sample.fastqs) > 1: #need indices for merge command
+            create_index = 'CREATE_INDEX=true'
+        else:
+            create_index = ''
         cmd = '''java -Xmx{}g -jar {} \\
     FixMateInformation \\
     VALIDATION_STRINGENCY=SILENT \\
@@ -196,9 +201,9 @@ echo $?
     I={} \\
     O={} \\
     TMP_DIR={} \\
-    MAX_RECORDS_IN_RAM={}
+    MAX_RECORDS_IN_RAM={} {}
 '''.format(int(self.java_mem), PATHS['picard'], in_bam, out_bam,
-           self.sample.tmp_dirs[self.i], self.max_records)
+           self.sample.tmp_dirs[self.i], self.max_records, create_index)
         return self._java_cmd(script_name, cmd)
 
 
