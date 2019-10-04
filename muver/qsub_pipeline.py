@@ -338,10 +338,52 @@ echo $?
     else:
         call(call_args)
 
+def submit_dp_strand_scripts(script_prefix, bams, reference_assembly,
+                             holding_jobs, human_autosomes=False, runtime=96,
+                             mem=16, dummy=False):
+    h_flag = ""
+    jobs = []
+    if human_autosomes:
+        h_flag = "--human_autosomes"
+    hold_args = ",".join(os.path.basename(x) for x in holding_jobs)
+    stdouts = " ".join(x + '.stdout' for x in holding_jobs)
+    for bam in bams:
+        prefix = os.path.splitext(bam)[0]
+        cmd = '''muver_qsub depth_and_strand_bias_ratios {} \\
+    {} \\
+    {} \\
+    {}'''.format(h_flag, bam, reference_assembly, prefix)
+        script = script_prefix + "_" + os.path.basename(prefix) + ".sh"
+        with open(script, 'wt') as outfile:
+                outfile.write('''#!/bin/bash
+#$ -e {}.stderr
+#$ -o {}.stdout
+#$ -V
+#$ -cwd
+#$ -l h_rt={}:00:00
+#$ -l h_vmem={}G
+
+set -euo pipefail
+{}
+
+echo $(date) Getting depth and strand bias stats from {}
+{}
+
+echo $(date) Finished
+echo $?
+'''.format(script, script, runtime, mem, _bash_check_log, bam, cmd))
+        call_args = ['qsub', '-hold_jid', hold_args, script, stdouts]
+        if dummy:
+            print(" ".join(call_args))
+        else:
+            call(call_args)
+        jobs.append(script)
+    return jobs
 
 def run_pipeline(reference_assembly, fastq_list, control_sample,
                  experiment_directory, p=1, excluded_regions=None,
-                 fwer=0.01, max_records=1000000, runtime=96, dummy_run=False):
+                 fwer=0.01, max_records=1000000, runtime=96,
+                 human_autosomes=False, dummy_run=False):
     '''
     Run the MuVer pipeline considering input FASTQ files.  All files written
     to the experiment directory.
@@ -413,6 +455,11 @@ def run_pipeline(reference_assembly, fastq_list, control_sample,
         runtime=runtime,
         dummy=dummy_run,
     )
+    dp_strand_script = os.path.join(sample.exp_dir, 'qsub_scripts',
+                                   'strand_and_depth_biases')
+    bias_jobs = submit_dp_strand_scripts(dp_strand_script, bams,
+                                         reference_assembly, holding_jobs,
+                                         human_autosomes)
 
 #    chrom_sizes = reference.read_chrom_sizes(reference_assembly)
 #

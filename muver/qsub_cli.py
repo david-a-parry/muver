@@ -7,7 +7,6 @@ import os
 
 from qsub_pipeline import run_pipeline as _run_qsub_pipeline
 
-
 @click.group()
 def main(args=None):
     pass
@@ -24,6 +23,8 @@ def main(args=None):
               sorting BAM files. Modify when any FASTQ pair \
               contains >1 billion reads. See manual for guidance \
               in setting this parameter. Default = 1000000.')
+@click.option('--human_autosomes', is_flag=True,
+               help='Only analyze data in human autosomes (chromosomes 1-22).')
 @click.option('--runtime', default=96, type=int,
               help='Runtime for qsub scripts in hours. Default=96.')
 @click.option('--dummy_run', is_flag=True,
@@ -62,8 +63,53 @@ def run_qsub_pipeline(reference_assembly, fastq_list, control_sample_name,
         fwer=fwer,
         max_records=max_records,
         runtime=runtime,
+        human_autosomes=human_autosomes,
         dummy_run=dummy_run,
     )
+
+@main.command()
+@click.option('--ploidy',  default=2, type=int,
+              help='Sample ploidy.')
+@click.option('--subsample_size', default=1e8, type=float,
+              help='Amount of datapoints to subsample for strand bias and \
+              depth analyses.')
+@click.option('--human_autosomes', is_flag=True,
+               help='Only analyze data in human autosomes (chromosomes 1-22).')
+@click.option('--cnv_bedgraph_file', type=str, default=None,
+              help='bedGraph file describing CNV regions')
+@click.option('--p_threshold', type=float, default=0.0001,
+              help='p-value threshold for abnormal depth')
+@click.option('--merge_window', type=int, default=1000,
+              help='maximum distance of adjacent abnormal sites \
+              for creation of filtered regions')
+@click.argument('input_bam', type=click.Path(exists=True))
+@click.argument('reference_assembly', type=click.Path(exists=True))
+@click.argument('output_prefix', type=str)
+
+def depth_and_strand_bias_ratios(input_bam, reference_assembly, output_prefix,
+                                 ploidy, subsample_size, human_autosomes,
+                                 cnv_bedgraph_file, p_threshold, merge_window):
+    ''' Calculate depth and strand biases from bam. Produce a list of regions
+        to filter.'''
+    from depth_and_strand_bias import depth_and_strand_ratios_from_bam
+    chrom_whitelist = set()
+    if human_autosomes:
+        chrom_whitelist = [str(x) for x in range(1, 23)] #GRCh37 style
+        chrom_whitelist += ["chr" + x for x in chrom_whitelist] #hg19/38 style
+        chrom_whitelist = set(chrom_whitelist)
+    strand_output = output_prefix + ".strand_bias.txt.gz"
+    depth_output = output_prefix + ".depth.txt.gz"
+    strand_stats = output_prefix + ".strand_bias_stats.txt"
+    depth_stats = output_prefix + ".depth_stats.txt"
+    filtered_regions_output = output_prefix + ".filtered_regions.bed"
+    depth_and_strand_ratios_from_bam(input_bam, reference_assembly,
+                                     strand_output, strand_stats, depth_output,
+                                     depth_stats, filtered_regions_output,
+                                     ploidy, cnv_bedgraph=cnv_bedgraph_file,
+                                     chrom_whitelist=chrom_whitelist,
+                                     sample_size=subsample_size,
+                                     p_threshold=p_threshold,
+                                     merge_window=merge_window)
 
 if __name__ == "__main__":
     main()
