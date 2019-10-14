@@ -4,6 +4,7 @@
 
 import click
 import os
+import sys
 
 from qsub_pipeline import run_pipeline as _run_qsub_pipeline
 
@@ -110,6 +111,54 @@ def depth_and_strand_bias_ratios(input_bam, reference_assembly, output_prefix,
                                      sample_size=subsample_size,
                                      p_threshold=p_threshold,
                                      merge_window=merge_window)
+
+@main.command()
+@click.option('--human_autosomes', is_flag=True,
+               help='Only analyze data in human autosomes (chromosomes 1-22).')
+@click.argument('input_bam', type=click.Path(exists=True))
+@click.argument('repeats_file', type=click.Path(exists=True))
+@click.argument('output_prefix', type=str)
+
+def repeat_rates(input_bam, repeats_file, output_prefix, human_autosomes):
+    repeat_bgz = repeats_file + '.bgz'
+    repeat_tbi = repeats_bgz + '.tbi'
+    if not os.path.exists(repeat_file):
+        sys.stderr.write('Repeats not found for reference assembly. Run '
+            '"muver create_repeat_file".\n')
+        exit()
+    if not os.path.exists(repeat_bgz) or not os.path.exists(repeats_tbi):
+        sys.stderr.write('{} or {} not found.'.format(repeat_bgz, repeat_tbi) +
+                         ' Run muver_qsub compress_and_index_repeats".\n')
+        exit()
+    from repeat_indels import fit_repeat_indel_rates_low_mem
+    chrom_whitelist = None
+    if human_autosomes:
+        chrom_whitelist = [str(x) for x in range(1, 23)] #GRCh37 style
+        chrom_whitelist += ["chr" + x for x in chrom_whitelist] #hg19/38 style
+        chrom_whitelist = set(chrom_whitelist)
+    if os.path.isfile(repeats_file + '.sample'):
+        repeats_file = repeats_file + '.sample'
+    fit_repeat_indel_rates_low_mem(repeats_file, bam_file,
+                                   output_prefix + '.repeat_indel_fits.txt',
+                                   output_prefix + '.repeat_indel_header.txt',
+                                   chromosome_whitelist=chrom_whitelist)
+
+@main.command()
+@click.argument('repeats_file', type=click.Path(exists=True))
+
+def compress_and_index_repeats(repeats_file):
+    try:
+        import pysam
+    except ImportError:
+        raise RuntimeError("Can not import pysam. Please install pysam in " +
+                           "order to write and index compressed repeats file.")
+    output = repeats_file + '.bgz'
+    sys.stderr.write("Compressing {} to {}\n".format(repeats_file, output))
+    pysam.tabix_compress(repeats_file, output, force=True)
+    sys.stderr.write("Indexing {}\n".format(output))
+    pysam.tabix_index(output, force=True, seq_col=0, start_col=4, end_col=5)
+    sys.stderr.write("Finished compressing and indexing {}".format(
+                     repeats_file))
 
 if __name__ == "__main__":
     main()

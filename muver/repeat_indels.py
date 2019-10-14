@@ -5,11 +5,22 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import math
 import re
-from scipy.optimize import curve_fit
+#from scipy.optimize import curve_fit
 
 from fitting import logistic
 from wrappers.samtools import view_bam
 
+def calculate_repeat_occurrences_from_file(repeats_file,
+                                           chromosome_whitelist=None):
+    occurrences = defaultdict(int)
+    with open(repeats_file) as infile:
+        for line in infile:
+            chrom, seq, unit_length, rpt_unit, start, end = line.split()
+            if chromosome_whitelist is not None:
+                if chrom not in chromosome_whitelist:
+                    continue
+            occurrences[(int(unit_length), len(seq))] += 1
+    return occurrences
 
 def calculate_repeat_occurrences(repeats):
     '''
@@ -37,6 +48,159 @@ def calculate_repeat_occurrences(repeats):
                     occurrences[(repeat_unit_length, repeat_tract_length)] += 1
 
     return occurrences
+
+def _repeats_from_tabix(tbx, chromosome, pos):
+    rpts = []
+    try:
+        tbx_iter = tbx.fetch(chromosome, pos-1, pos)
+    except ValueError: #chromosome not in tbx file
+        return rpts
+    for line in tbx_iter:
+        chrom, seq, unit_length, rpt_unit, start, end = line.split()
+        rpts.append({'sequence': seq,
+                     'unit': rpt_unit,
+                     'start': int(start),
+                     'unit_length': int(unit_length),
+                    })
+    return rpts
+
+def calculate_repeat_indel_counts_tabix(repeats_bgz, sam_iter,
+                                        chromosome_whitelist=None):
+    '''
+    Iterating through a BAM/SAM file, count the number of indels with repeats,
+    noting the repeat unit length and repeat tract length. Return as dict
+    with overall depth counts and insertion and deletion counts.
+    '''
+    try:
+        import pysam
+    except ImportError:
+        raise RuntimeError("Error importing pysam. Please install the " +
+                           "pysam module to retrieve repeats from tabix " +
+                           "indexed repeats file.")
+    tbx = pysam.TabixFile(repeats_bgz)
+    counts = dict()
+    for field in ['depth', 'insertion', 'deletion']:
+        counts[field] = dict()
+        for repeat_length in range(1, 5):
+            counts[field][repeat_length] = defaultdict(int)
+
+    for line in sam_iter:
+
+        if line.startswith('@'):
+            pass
+
+        else:
+
+            line_split = line.strip().split('\t')
+
+            chromosome = line_split[2]
+            if chromosome_whitelist is not None:
+                if chromosome not in chromosome_whitelist:
+                    continue
+            position = int(line_split[3])
+            cigar_string = line_split[5]
+            sequence = line_split[9]
+
+            total_length = 0
+            length = 0
+            _sum = 0
+
+            starts = []
+            deletions = []
+            lengths = []
+            ops = []
+
+            for match in re.finditer('(\d+)([MISD])', cigar_string):
+
+                try:
+                    starts.append(starts[-1] + length)
+                except IndexError:
+                    starts.append(length)
+
+                length = int(match.group(1))
+                op = match.group(2)
+
+                ops.append(op)
+
+                if op == 'M' or op == 'D':
+                    total_length += length
+
+                if op == 'D':
+                    deletions.append(length)
+                    length = 0
+                else:
+                    deletions.append(0)
+
+                lengths.append(length)
+
+            end = position + total_length - 1
+
+            for i, op in enumerate(ops):
+
+                if op == 'S':
+                    _sum += lengths[i]
+
+                elif op == 'I':
+                    left = position + starts[i] - 1
+                    left -= _sum
+
+                    position_repeats = _repeats_from_tabix(tbx, chromosome,
+                                                           left)
+
+                    for repeat in position_repeats:
+                        if repeat['start'] == left:
+
+                            if repeat['start'] + len(repeat['sequence']) < end:
+
+                                repeat_unit_length = len(repeat['unit'])
+                                repeat_length = repeat_unit_length * \
+                                    repeat['sequence'].count(repeat['unit'])
+
+                                counts['depth'][repeat_unit_length][repeat_length] += 1
+                                counts['insertion'][repeat_unit_length][repeat_length] += 1
+
+                    _sum += lengths[i]
+
+                elif op == 'D':
+                    left = position + starts[i] - 1
+                    left -= _sum
+
+                    position_repeats = _repeats_from_tabix(tbx, chromosome,
+                                                           left)
+
+                    for repeat in position_repeats:
+                        if repeat['start'] == left: #HEY! IS THIS CORRECT? ONLY STARTS?
+
+                            if repeat['start'] + len(repeat['sequence']) < end:
+
+                                repeat_unit_length = len(repeat['unit'])
+                                repeat_length = repeat_unit_length * \
+                                    repeat['sequence'].count(repeat['unit'])
+
+                                counts['depth'][repeat_unit_length][repeat_length] += 1
+                                counts['deletion'][repeat_unit_length][repeat_length] += 1
+
+                    _sum -= deletions[i]
+
+                elif op == 'M':
+                    for j in range(lengths[i]):
+                        left = position + starts[i] - _sum + j
+
+                        position_repeats = _repeats_from_tabix(tbx, chromosome,
+                                                               left)
+
+                        for repeat in position_repeats:
+                            if repeat['start'] == left and j < lengths[i] - 1:
+
+                                if repeat['start'] + len(repeat['sequence']) < end:
+
+                                    repeat_unit_length = len(repeat['unit'])
+                                    repeat_length = repeat_unit_length * \
+                                        repeat['sequence'].count(repeat['unit'])
+
+                                    counts['depth'][repeat_unit_length][repeat_length] += 1
+
+    return counts
 
 
 def calculate_repeat_indel_counts(repeats, sam_iter):
@@ -210,6 +374,7 @@ def fit_rates(indel_rates):
     Considering repeats of a given repeat unit length, fit rates to a logistic
     function of repeat tract length.  Return fit parameters in a dict.
     '''
+    from scipy.optimize import curve_fit
     fits = dict()
 
     for event in ['insertion', 'deletion']:
@@ -403,7 +568,7 @@ def read_rates(rates_file):
     return(rates)
 
 def fit_repeat_indel_rates(repeats, bam_file, output_file,
-                                    output_plot_header=None):
+                           output_plot_header=None):
     '''
     Considering a dictionary of repeats, iterate through a BAM/SAM file and
     record occurrences of indels within repeat sequences. Then, find rates
@@ -427,3 +592,22 @@ def fit_repeat_indel_rates(repeats, bam_file, output_file,
     print_rates(indel_rates, output_file)
     if output_plot_header:
         plot_fits(indel_rates, fits, output_plot_header)
+
+def fit_repeat_indel_rates_low_mem(repeats_file, bam_file, output_file,
+                                   output_plot_header=None,
+                                   chromosome_whitelist=None):
+    bam_iter = view_bam(bam_file)
+    repeat_occurrences = calculate_repeat_occurrences_from_file(repeats_file,
+                                                                chromosome_whitelist)
+    indel_counts = calculate_repeat_indel_counts(repeats, bam_iter)
+    indel_rates = calculate_repeat_indel_counts_tabix(repeats_bgz, bam_iter,
+                                                      chromosome_whitelist)
+
+    fits = fit_rates(indel_rates)
+
+    print_fits(fits, output_file)
+    print_rates(indel_rates, output_file)
+    if output_plot_header:
+        plot_fits(indel_rates, fits, output_plot_header)
+
+ 
