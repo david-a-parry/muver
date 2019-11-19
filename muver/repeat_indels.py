@@ -9,6 +9,9 @@ import re
 
 from fitting import logistic
 from wrappers.samtools import view_bam
+import sys
+
+import pdb
 
 def calculate_repeat_occurrences_from_file(repeats_file,
                                            chromosome_whitelist=None):
@@ -49,10 +52,13 @@ def calculate_repeat_occurrences(repeats):
 
     return occurrences
 
-def _repeats_from_tabix(tbx, chromosome, pos):
+def _repeats_from_tabix(tbx, chromosome, pos=None):
     rpts = []
     try:
-        tbx_iter = tbx.fetch(chromosome, pos-1, pos)
+        if pos is not None:
+            tbx_iter = tbx.fetch(chromosome, pos-1, pos)
+        else:
+            tbx_iter = tbx.fetch(chromosome)
     except ValueError: #chromosome not in tbx file
         return rpts
     for line in tbx_iter:
@@ -60,9 +66,47 @@ def _repeats_from_tabix(tbx, chromosome, pos):
         rpts.append({'sequence': seq,
                      'unit': rpt_unit,
                      'start': int(start),
+                     'end': int(end),
                      'unit_length': int(unit_length),
                     })
     return rpts
+
+def _binsearch(repeats, l, u, start, end):
+    ''' Find any repeat overlapping start and end coordinates.'''
+    if u < l:
+        return -1
+    i = int(l + u)//2
+    if repeats[i]['end'] < start:
+        return _binsearch(repeats, i + 1, u, start, end)
+    elif repeats[i]['start'] > end:
+        return _binsearch(repeats, l, i - 1, start, end)
+    else:
+        return i
+
+def _binsearch_repeats(repeats, start, end):
+    '''
+        Assumes all repeats are on the same chromosome. Return all
+        overlapping repeats.
+    '''
+    l = 0
+    u = len(repeats) - 1
+    i = _binsearch(repeats, l, u, start, end)
+    hits = []
+    if i > -1:
+        for j in range(i-1, -1, -1):
+            if start <= repeats[j]['end'] and end > repeats[j]['start']:
+                hits.append(repeats[j])
+            elif repeats[j]['end'] < start:
+                break
+        hits.reverse()
+        for j in range(i, len(repeats)):
+            if start <= repeats[j]['end'] and end > repeats[j]['start']:
+                hits.append(repeats[j])
+            elif repeats[j]['start'] > end:
+                break
+    return hits
+
+
 
 def calculate_repeat_indel_counts_tabix(repeats_bgz, sam_iter,
                                         chromosome_whitelist=None):
@@ -83,7 +127,9 @@ def calculate_repeat_indel_counts_tabix(repeats_bgz, sam_iter,
         counts[field] = dict()
         for repeat_length in range(1, 5):
             counts[field][repeat_length] = defaultdict(int)
-
+    prev_chrom = ''
+    chrom_repeats = []
+    pdb.set_trace()
     for line in sam_iter:
 
         if line.startswith('@'):
@@ -97,6 +143,12 @@ def calculate_repeat_indel_counts_tabix(repeats_bgz, sam_iter,
             if chromosome_whitelist is not None:
                 if chromosome not in chromosome_whitelist:
                     continue
+            if chromosome != prev_chrom:
+                prev_chrom = chromosome
+                sys.stderr.write("Reading repeats for chromosome {}\n".format(
+                    chromosome))
+                chrom_repeats = []
+                chrom_repeats = _repeats_from_tabix(tbx, chromosome)
             position = int(line_split[3])
             cigar_string = line_split[5]
             sequence = line_split[9]
@@ -134,7 +186,7 @@ def calculate_repeat_indel_counts_tabix(repeats_bgz, sam_iter,
                 lengths.append(length)
 
             end = position + total_length - 1
-
+            read_repeats = _binsearch_repeats(chrom_repeats, position, end)
             for i, op in enumerate(ops):
 
                 if op == 'S':
@@ -144,12 +196,12 @@ def calculate_repeat_indel_counts_tabix(repeats_bgz, sam_iter,
                     left = position + starts[i] - 1
                     left -= _sum
 
-                    position_repeats = _repeats_from_tabix(tbx, chromosome,
-                                                           left)
-
+                    position_repeats = _binsearch_repeats(read_repeats, left,
+                                                          left)
                     for repeat in position_repeats:
                         if repeat['start'] == left:
 
+                            pdb.set_trace()
                             if repeat['start'] + len(repeat['sequence']) < end:
 
                                 repeat_unit_length = len(repeat['unit'])
@@ -165,12 +217,13 @@ def calculate_repeat_indel_counts_tabix(repeats_bgz, sam_iter,
                     left = position + starts[i] - 1
                     left -= _sum
 
-                    position_repeats = _repeats_from_tabix(tbx, chromosome,
-                                                           left)
+                    position_repeats = _binsearch_repeats(read_repeats, left,
+                                                          left)
 
                     for repeat in position_repeats:
                         if repeat['start'] == left: #HEY! IS THIS CORRECT? ONLY STARTS?
 
+                            pdb.set_trace()
                             if repeat['start'] + len(repeat['sequence']) < end:
 
                                 repeat_unit_length = len(repeat['unit'])
@@ -186,12 +239,13 @@ def calculate_repeat_indel_counts_tabix(repeats_bgz, sam_iter,
                     for j in range(lengths[i]):
                         left = position + starts[i] - _sum + j
 
-                        position_repeats = _repeats_from_tabix(tbx, chromosome,
-                                                               left)
+                        position_repeats = _binsearch_repeats(read_repeats, left,
+                                                              left)
 
                         for repeat in position_repeats:
                             if repeat['start'] == left and j < lengths[i] - 1:
 
+                                pdb.set_trace()
                                 if repeat['start'] + len(repeat['sequence']) < end:
 
                                     repeat_unit_length = len(repeat['unit'])
@@ -597,11 +651,13 @@ def fit_repeat_indel_rates_low_mem(repeats_file, bam_file, output_file,
                                    output_plot_header=None,
                                    chromosome_whitelist=None):
     bam_iter = view_bam(bam_file)
+    repeats_bgz = repeats_file + '.bgz'
+    repeats_tbi = repeats_bgz + '.tbi'
     repeat_occurrences = calculate_repeat_occurrences_from_file(repeats_file,
                                                                 chromosome_whitelist)
-    indel_counts = calculate_repeat_indel_counts(repeats, bam_iter)
-    indel_rates = calculate_repeat_indel_counts_tabix(repeats_bgz, bam_iter,
-                                                      chromosome_whitelist)
+    indel_counts = calculate_repeat_indel_counts_tabix(repeats_bgz, bam_iter,
+                                                       chromosome_whitelist)
+    indel_rates = calculate_repeat_indel_rates(indel_counts, repeat_occurrences)
 
     fits = fit_rates(indel_rates)
 
