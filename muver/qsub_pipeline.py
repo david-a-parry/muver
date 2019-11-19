@@ -389,6 +389,8 @@ def run_pipeline(reference_assembly, fastq_list, control_sample,
     to the experiment directory.
     '''
     repeat_file = '{}.repeats'.format(os.path.splitext(reference_assembly)[0])
+    repeat_bgz = repeat_file + '.bgz'
+    repeat_tbi = repeat_bgz + '.tbi'
     if not reference.check_reference_indices(reference_assembly):
         sys.stderr.write('Reference assembly not indexed. Run '
             '"muver index_reference".\n')
@@ -396,6 +398,10 @@ def run_pipeline(reference_assembly, fastq_list, control_sample,
     if not os.path.exists(repeat_file):
         sys.stderr.write('Repeats not found for reference assembly. Run '
             '"muver create_repeat_file".\n')
+        exit()
+    if not os.path.exists(repeat_bgz) or not os.path.exists(repeats_tbi):
+        sys.stderr.write('{} or {} not found.'.format(repeat_bgz, repeat_tbi) +
+                         ' Run muver_qsub compress_and_index_repeats".\n')
         exit()
     generate_experiment_directory(experiment_directory)
     samples = read_samples_from_text(

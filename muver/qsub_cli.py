@@ -120,14 +120,14 @@ def depth_and_strand_bias_ratios(input_bam, reference_assembly, output_prefix,
 @click.argument('output_prefix', type=str)
 
 def repeat_rates(input_bam, repeats_file, output_prefix, human_autosomes):
-    repeat_bgz = repeats_file + '.bgz'
-    repeat_tbi = repeats_bgz + '.tbi'
-    if not os.path.exists(repeat_file):
+    repeats_bgz = repeats_file + '.bgz'
+    repeats_tbi = repeats_bgz + '.tbi'
+    if not os.path.exists(repeats_file):
         sys.stderr.write('Repeats not found for reference assembly. Run '
             '"muver create_repeat_file".\n')
         exit()
-    if not os.path.exists(repeat_bgz) or not os.path.exists(repeats_tbi):
-        sys.stderr.write('{} or {} not found.'.format(repeat_bgz, repeat_tbi) +
+    if not os.path.exists(repeats_bgz) or not os.path.exists(repeats_tbi):
+        sys.stderr.write('{} or {} not found.'.format(repeats_bgz, repeats_tbi) +
                          ' Run muver_qsub compress_and_index_repeats".\n')
         exit()
     from repeat_indels import fit_repeat_indel_rates_low_mem
@@ -138,7 +138,7 @@ def repeat_rates(input_bam, repeats_file, output_prefix, human_autosomes):
         chrom_whitelist = set(chrom_whitelist)
     if os.path.isfile(repeats_file + '.sample'):
         repeats_file = repeats_file + '.sample'
-    fit_repeat_indel_rates_low_mem(repeats_file, bam_file,
+    fit_repeat_indel_rates_low_mem(repeats_file, input_bam,
                                    output_prefix + '.repeat_indel_fits.txt',
                                    output_prefix + '.repeat_indel_header.txt',
                                    chromosome_whitelist=chrom_whitelist)
