@@ -17,6 +17,8 @@ requirements = [
     'scipy>=0.18.1',
     'matplotlib>=2.0.0',
     'regex>=2017.6.23',
+    'biopython',
+    'pysam',
 ]
 
 setup_requirements = [
@@ -38,7 +40,8 @@ setup(
     packages=find_packages(include=['muver', 'muver.wrappers']),
     entry_points={
         'console_scripts': [
-            'muver=muver.cli:main'
+            'muver=muver.cli:main',
+            'muver_qsub=muver.qsub_cli:main'
         ]
     },
     include_package_data=True,
